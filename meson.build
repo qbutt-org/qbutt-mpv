@@ -806,6 +806,14 @@ vapoursynth = dependency('vapoursynth-script', 'vapoursynth', version: '>= 56',
 features += {'vapoursynth': vapoursynth.found()}
 if features['vapoursynth']
     dependencies += vapoursynth.partial_dependency(compile_args: true, includes: true)
+endif
+vapoursynth_native = dependency('vapoursynth', version: '>= 56',
+                               required: get_option('vapoursynth-native'))
+features += {'vapoursynth-native': vapoursynth_native.found()}
+if features['vapoursynth-native']
+    dependencies += vapoursynth_native.partial_dependency(compile_args: true, includes: true)
+endif
+if features['vapoursynth'] or features['vapoursynth-native']
     sources += files('video/filter/vf_vapoursynth.c')
 endif
 
@@ -1845,12 +1853,14 @@ if get_option('libmpv')
                  description: 'mpv media player client library')
 
     headers = ['include/mpv/client.h', 'include/mpv/render.h',
-               'include/mpv/render_gl.h', 'include/mpv/stream_cb.h']
+               'include/mpv/render_gl.h', 'include/mpv/stream_cb.h',
+               'include/mpv/qbutt_vapoursynth.h']
     install_headers(headers, subdir: 'mpv')
 
     # Allow projects to build with libmpv by cloning into ./subprojects/mpv
     libmpv_dep = declare_dependency(include_directories: incdir_public, link_with: libmpv)
     meson.override_dependency('mpv', libmpv_dep)
+
 endif
 
 if get_option('cplayer')

@@ -22,7 +22,15 @@
 #include <limits.h>
 #include <assert.h>
 
+#include "config.h"
+
+#include <VapourSynth4.h>
+#if HAVE_VAPOURSYNTH
 #include <VSScript4.h>
+#endif
+#if HAVE_VAPOURSYNTH_NATIVE && defined(_WIN32)
+#include <windows.h>
+#endif
 
 #include <libavutil/rational.h>
 #include <libavutil/cpu.h>
@@ -38,10 +46,12 @@
 #include "options/path.h"
 #include "osdep/io.h"
 #include "osdep/threads.h"
+#include "player/client.h"
 #include "video/img_format.h"
 #include "video/mp_image.h"
 #include "video/sws_utils.h"
 
+#if HAVE_VAPOURSYNTH
 static const char *const vsscript_lib_names[] = {
 #ifdef _WIN32
     "VSScript.dll",
@@ -53,6 +63,7 @@ static const char *const vsscript_lib_names[] = {
     "libvapoursynth-script.so",
 #endif
 };
+#endif
 
 struct vapoursynth_opts {
     char *file;
@@ -66,7 +77,7 @@ struct vapoursynth_opts {
 struct priv {
     struct mp_log *log;
     struct vapoursynth_opts *opts;
-    char *script_path;
+    char *file_path;
 
     VSCore *vscore;
     const VSAPI *vsapi;
@@ -74,9 +85,14 @@ struct priv {
     VSNode *in_node;
 
     const struct script_driver *drv;
+#if HAVE_VAPOURSYNTH
     // drv_vss
     const VSSCRIPTAPI *vs_script_api;
     VSScript *vs_script;
+#endif
+#if HAVE_VAPOURSYNTH_NATIVE
+    void *native_library;
+#endif
 
     struct mp_filter *f;
     struct mp_pin *in_pin;
@@ -117,9 +133,13 @@ struct script_driver {
     int (*init)(struct priv *p);                // first time init
     void (*uninit)(struct priv *p);             // last time uninit
     int (*load_core)(struct priv *p);           // make vsapi/vscore available
-    int (*load)(struct priv *p, VSMap *vars);   // also sets p->out_node
+    int (*load)(struct priv *p, struct mp_image *input); // also sets p->out_node
     void (*unload)(struct priv *p);             // unload script and maybe vs
 };
+
+#if HAVE_VAPOURSYNTH_NATIVE
+static const struct script_driver drv_native;
+#endif
 
 static bool get_valid_mp_regular_imgfmt(struct mp_regular_imgfmt *reg_fmt, int imgfmt) {
     if (!mp_get_regular_imgfmt(reg_fmt, imgfmt))
@@ -604,7 +624,6 @@ static void destroy_vs(struct priv *p)
 
 static int reinit_vs(struct priv *p, struct mp_image *input)
 {
-    VSMap *vars = NULL;
     int res = -1;
 
     destroy_vs(p);
@@ -648,39 +667,7 @@ static int reinit_vs(struct priv *p, struct mp_image *input)
     }
     p->in_node_active = true;
 
-    vars = p->vsapi->createMap();
-    if (!vars)
-        goto error;
-
-    if (p->vsapi->mapSetNode(vars, "video_in", p->in_node, 0))
-        goto error;
-
-    int d_w, d_h;
-    mp_image_params_get_dsize(&p->fmt_in, &d_w, &d_h);
-
-    p->vsapi->mapSetInt(vars, "video_in_dw", d_w, 0);
-    p->vsapi->mapSetInt(vars, "video_in_dh", d_h, 0);
-
-    struct mp_stream_info *info = mp_filter_find_stream_info(p->f);
-    double container_fps = input->nominal_fps;
-    double display_fps = 0;
-    int64_t display_res[2] = {0};
-    if (info) {
-        if (info->get_display_fps)
-            display_fps = info->get_display_fps(info);
-        if (info->get_display_res) {
-            int tmp[2] = {0};
-            info->get_display_res(info, tmp);
-            display_res[0] = tmp[0];
-            display_res[1] = tmp[1];
-        }
-    }
-    p->vsapi->mapSetFloat(vars, "container_fps", container_fps, 0);
-    p->vsapi->mapSetFloat(vars, "display_fps", display_fps, 0);
-    p->vsapi->mapSetIntArray(vars, "display_res", display_res, 2);
-    p->vsapi->mapSetData(vars, "user_data", p->opts->user_data, -1, dtUtf8, 0);
-
-    if (p->drv->load(p, vars) < 0)
+    if (p->drv->load(p, input) < 0)
         goto error;
     if (!p->out_node) {
         MP_FATAL(p, "Could not get script output node.\n");
@@ -699,9 +686,6 @@ static int reinit_vs(struct priv *p, struct mp_image *input)
     MP_DBG(p, "initialized.\n");
     res = 0;
 error:
-    if (p->vsapi) {
-        p->vsapi->freeMap(vars);
-    }
     if (res < 0)
         destroy_vs(p);
     return res;
@@ -762,7 +746,7 @@ static struct mp_filter *vf_vapoursynth_create(struct mp_filter *parent,
         MP_FATAL(p, "'file' parameter must be set.\n");
         goto error;
     }
-    p->script_path = mp_get_user_path(p, f->global, p->opts->file);
+    p->file_path = mp_get_user_path(p, f->global, p->opts->file);
 
     p->max_requests = p->opts->maxrequests;
     if (p->max_requests < 0)
@@ -780,8 +764,14 @@ static struct mp_filter *vf_vapoursynth_create(struct mp_filter *parent,
         // due to the lack of access to VapourSynth at this point, the formats
         // added to autoconvert is a superset of what's actually needed
         struct mp_regular_imgfmt reg_fmt;
-        if (get_valid_mp_regular_imgfmt(&reg_fmt, imgfmt))
-            mp_autoconvert_add_imgfmt(conv, imgfmt, 0);
+        if (!get_valid_mp_regular_imgfmt(&reg_fmt, imgfmt))
+            continue;
+#if HAVE_VAPOURSYNTH_NATIVE
+        // Full chroma keeps odd decoded dimensions representable in VS.
+        if (p->drv == &drv_native && (reg_fmt.chroma_xs || reg_fmt.chroma_ys))
+            continue;
+#endif
+        mp_autoconvert_add_imgfmt(conv, imgfmt, 0);
     }
 
     struct mp_filter *dur = mp_compute_frame_duration_create(f);
@@ -814,6 +804,7 @@ static const m_option_t vf_opts_fields[] = {
     {0}
 };
 
+#if HAVE_VAPOURSYNTH
 static int drv_vss_init(struct priv *p)
 {
     const char *vsscript_path = getenv("VSSCRIPT_PATH");
@@ -872,11 +863,42 @@ static int drv_vss_load_core(struct priv *p)
     return 0;
 }
 
-static int drv_vss_load(struct priv *p, VSMap *vars)
+static int drv_vss_load(struct priv *p, struct mp_image *input)
 {
-    p->vs_script_api->setVariables(p->vs_script, vars);
+    VSMap *vars = p->vsapi->createMap();
+    if (!vars)
+        return -1;
+    if (p->vsapi->mapSetNode(vars, "video_in", p->in_node, 0)) {
+        p->vsapi->freeMap(vars);
+        return -1;
+    }
 
-    if (p->vs_script_api->evaluateFile(p->vs_script, p->script_path)) {
+    int d_w, d_h;
+    mp_image_params_get_dsize(&p->fmt_in, &d_w, &d_h);
+    p->vsapi->mapSetInt(vars, "video_in_dw", d_w, 0);
+    p->vsapi->mapSetInt(vars, "video_in_dh", d_h, 0);
+
+    struct mp_stream_info *info = mp_filter_find_stream_info(p->f);
+    double display_fps = 0;
+    int64_t display_res[2] = {0};
+    if (info) {
+        if (info->get_display_fps)
+            display_fps = info->get_display_fps(info);
+        if (info->get_display_res) {
+            int tmp[2] = {0};
+            info->get_display_res(info, tmp);
+            display_res[0] = tmp[0];
+            display_res[1] = tmp[1];
+        }
+    }
+    p->vsapi->mapSetFloat(vars, "container_fps", input->nominal_fps, 0);
+    p->vsapi->mapSetFloat(vars, "display_fps", display_fps, 0);
+    p->vsapi->mapSetIntArray(vars, "display_res", display_res, 2);
+    p->vsapi->mapSetData(vars, "user_data", p->opts->user_data, -1, dtUtf8, 0);
+    p->vs_script_api->setVariables(p->vs_script, vars);
+    p->vsapi->freeMap(vars);
+
+    if (p->vs_script_api->evaluateFile(p->vs_script, p->file_path)) {
         MP_FATAL(p, "Script evaluation failed:\n%s\n", p->vs_script_api->getError(p->vs_script));
         return -1;
     }
@@ -913,3 +935,109 @@ const struct mp_user_filter_entry vf_vapoursynth = {
     },
     .create = vf_vapoursynth_create,
 };
+#endif
+
+#if HAVE_VAPOURSYNTH_NATIVE
+static int drv_native_init(struct priv *p)
+{
+#ifdef _WIN32
+    p->native_library = LoadLibraryExW(mp_from_utf8(p, p->file_path), NULL,
+        LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    if (!p->native_library) {
+        MP_FATAL(p, "Failed to load native VapourSynth core: Windows error %lu\n",
+                 GetLastError());
+        return -1;
+    }
+#else
+    p->native_library = dlopen(p->file_path, RTLD_NOW | RTLD_LOCAL);
+    if (!p->native_library) {
+        MP_FATAL(p, "Failed to load native VapourSynth core: %s\n", dlerror());
+        return -1;
+    }
+#endif
+
+    const VSAPI *(VS_CC *get_api)(int) = (void *)dlsym(p->native_library,
+                                                    "getVapourSynthAPI");
+    if (get_api)
+        p->vsapi = get_api(VAPOURSYNTH_API_VERSION);
+    if (!p->vsapi) {
+        MP_FATAL(p, "The native VapourSynth core does not provide the required API.\n");
+        return -1;
+    }
+    return 0;
+}
+
+static void drv_native_uninit(struct priv *p)
+{
+    p->vsapi = NULL;
+    if (p->native_library) {
+#ifdef _WIN32
+        FreeLibrary(p->native_library);
+#else
+        dlclose(p->native_library);
+#endif
+        p->native_library = NULL;
+    }
+}
+
+static int drv_native_load_core(struct priv *p)
+{
+    p->vscore = p->vsapi->createCore(ccfDisableAutoLoading);
+    if (!p->vscore)
+        return -1;
+    p->vsapi->setThreadCount(p->max_requests, p->vscore);
+    return 0;
+}
+
+static int drv_native_load(struct priv *p, struct mp_image *input)
+{
+    mpv_qbutt_vapoursynth_graph_fn factory =
+        mp_client_get_vapoursynth_graph_factory(p->f->global);
+    if (!factory) {
+        MP_FATAL(p, "No native VapourSynth graph constructor is registered.\n");
+        return -1;
+    }
+    char error[1024] = {0};
+    p->out_node = factory(p->vsapi, p->vscore, p->in_node,
+                          p->opts->user_data, error, sizeof(error));
+    error[sizeof(error) - 1] = '\0';
+    if (!p->out_node) {
+        MP_FATAL(p, "Native graph construction failed: %s\n",
+                 error[0] ? error : "no output node");
+        return -1;
+    }
+    if (p->vsapi->getNodeType(p->out_node) != mtVideo) {
+        MP_FATAL(p, "The native graph constructor returned a non-video node.\n");
+        return -1;
+    }
+    return 0;
+}
+
+static void drv_native_unload(struct priv *p)
+{
+    if (p->vscore)
+        p->vsapi->freeCore(p->vscore);
+    p->vscore = NULL;
+}
+
+static const struct script_driver drv_native = {
+    .init = drv_native_init,
+    .uninit = drv_native_uninit,
+    .load_core = drv_native_load_core,
+    .load = drv_native_load,
+    .unload = drv_native_unload,
+};
+
+const struct mp_user_filter_entry vf_vapoursynth_native = {
+    .desc = {
+        .description = "Native VapourSynth graph bridge",
+        .name = "vapoursynth-native",
+        .priv_size = sizeof(OPT_BASE_STRUCT),
+        .priv_defaults = &(const OPT_BASE_STRUCT){
+            .drv = &drv_native,
+        },
+        .options = vf_opts_fields,
+    },
+    .create = vf_vapoursynth_create,
+};
+#endif

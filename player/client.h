@@ -5,6 +5,7 @@
 #include <stdbool.h>
 
 #include "mpv/stream_cb.h"
+#include "mpv/qbutt_vapoursynth.h"
 #include "misc/bstr.h"
 
 struct MPContext;
@@ -53,5 +54,8 @@ void kill_video_async(struct mp_client_api *client_api);
 
 bool mp_streamcb_lookup(struct mpv_global *g, const char *protocol,
                         void **out_user_data, mpv_stream_cb_open_ro_fn *out_fn);
+
+mpv_qbutt_vapoursynth_graph_fn
+mp_client_get_vapoursynth_graph_factory(struct mpv_global *global);
 
 #endif

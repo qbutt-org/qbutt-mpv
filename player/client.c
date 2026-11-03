@@ -81,6 +81,7 @@ struct mp_client_api {
     int num_custom_protocols;
 
     struct mpv_render_context *render_context;
+    mpv_qbutt_vapoursynth_graph_fn vapoursynth_graph_factory;
 };
 
 struct observe_property {
@@ -665,6 +666,39 @@ int mpv_initialize_opts(mpv_handle *ctx, char **options)
 int mpv_initialize(mpv_handle *ctx)
 {
     return mpv_initialize_opts(ctx, NULL);
+}
+
+int mpv_qbutt_set_vapoursynth_graph_factory(
+    mpv_handle *ctx, mpv_qbutt_vapoursynth_graph_fn factory)
+{
+    if (!factory)
+        return MPV_ERROR_INVALID_PARAMETER;
+
+#if HAVE_VAPOURSYNTH_NATIVE
+    lock_core(ctx);
+    struct mp_client_api *clients = ctx->clients;
+    mp_mutex_lock(&clients->lock);
+    int result = MPV_ERROR_INVALID_PARAMETER;
+    if (!ctx->mpctx->initialized && !clients->vapoursynth_graph_factory) {
+        clients->vapoursynth_graph_factory = factory;
+        result = 0;
+    }
+    mp_mutex_unlock(&clients->lock);
+    unlock_core(ctx);
+    return result;
+#else
+    return MPV_ERROR_UNSUPPORTED;
+#endif
+}
+
+mpv_qbutt_vapoursynth_graph_fn
+mp_client_get_vapoursynth_graph_factory(struct mpv_global *global)
+{
+    struct mp_client_api *clients = global->client_api;
+    mp_mutex_lock(&clients->lock);
+    mpv_qbutt_vapoursynth_graph_fn factory = clients->vapoursynth_graph_factory;
+    mp_mutex_unlock(&clients->lock);
+    return factory;
 }
 
 // set ev->data to a new copy of the original data

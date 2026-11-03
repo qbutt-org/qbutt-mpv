@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "upstream": {
+    "repository": "https://github.com/mpv-player/mpv",
+    "revision": "b2c255c13e8e37952dbac6c34da56a690560378b",
+    "sourceUrl": "https://codeload.github.com/mpv-player/mpv/tar.gz/b2c255c13e8e37952dbac6c34da56a690560378b",
+    "sourceSha256": "c7bfd3e13dc5ab957ba00693abf2d9dc8d38e97de99cf21d795c699ea8d58751"
+  }
+}

@@ -92,6 +92,9 @@ const struct mp_user_filter_entry *vf_list[] = {
 #if HAVE_VAPOURSYNTH
     &vf_vapoursynth,
 #endif
+#if HAVE_VAPOURSYNTH_NATIVE
+    &vf_vapoursynth_native,
+#endif
 #if HAVE_VDPAU
     &vf_vdpaupp,
 #endif
