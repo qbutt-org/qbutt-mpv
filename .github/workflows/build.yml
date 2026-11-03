@@ -1,35 +1,7 @@
 name: build
 
 on:
-  push:
-    branches:
-      - master
-      - ci
-      - 'release/**'
-    tags:
-      - 'v0.*'
-    paths-ignore:
-      - 'DOCS/**'
-      - 'TOOLS/lua/**'
-      - '.editorconfig'
-      - '.github/ISSUE_TEMPLATE/**'
-      - '.github/PULL_REQUEST_TEMPLATE'
-      - '.gitignore'
-      - 'Copyright'
-      - 'README.md'
-      - 'RELEASE_NOTES'
-  pull_request:
-    branches: [master]
-    paths-ignore:
-      - 'DOCS/**'
-      - 'TOOLS/lua/**'
-      - '.editorconfig'
-      - '.github/ISSUE_TEMPLATE/**'
-      - '.github/PULL_REQUEST_TEMPLATE'
-      - '.gitignore'
-      - 'Copyright'
-      - 'README.md'
-      - 'RELEASE_NOTES'
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}

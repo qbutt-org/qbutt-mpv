@@ -1,17 +1,7 @@
 name: docs
 
 on:
-  push:
-    branches:
-      - master
-      - ci
-      - 'release/**'
-    paths:
-      - 'DOCS/**'
-  pull_request:
-    branches: [master]
-    paths:
-      - 'DOCS/**'
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
